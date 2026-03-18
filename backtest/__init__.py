@@ -29,6 +29,7 @@ from .backtest_engine import BacktestEngine
 from .config import BacktestConfig
 from .signals.signal_generator import Signal, SignalType, SignalData
 from .execution.execution_engine import Trade, PositionSide, ExitReason
+from .unified_portfolio import UnifiedPortfolioBacktest, UnifiedPortfolioConfig
 
 __version__ = "1.0.0"
 
@@ -41,4 +42,6 @@ __all__ = [
     'Trade',
     'PositionSide',
     'ExitReason',
+    'UnifiedPortfolioBacktest',
+    'UnifiedPortfolioConfig',
 ]

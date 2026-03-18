@@ -46,6 +46,9 @@ py batch_runner.py --symbols BTCUSDT --strategy rsi --leverage 3
 
 # Save results
 py batch_runner.py --symbols BTCUSDT --output results.csv
+
+# Quiet mode (faster - skips validation, reduces logging)
+py batch_runner.py --all --strategy rsi --quiet
 ```
 
 ### Run Single Test
@@ -122,6 +125,8 @@ engine = create_ma_crossover_backtest(
 | `position_size_model` | PositionSizeModel | FIXED_PERCENT | Position sizing model |
 | `risk_per_trade` | float | 0.02 | Risk per trade % |
 | `exit_priority` | ExitPriority | CONSERVATIVE | TP/SL priority |
+| `verbose` | bool | True | Enable logging |
+| `skip_validation` | bool | False | Skip data validation for speed |
 
 ### Command Line Arguments
 
@@ -338,10 +343,21 @@ ValueError: No overlapping time range between 1h and 5m data
 
 ## Performance Tips
 
-1. **Parallel Processing**: Use `--parallel --workers 4` for faster batch processing
-2. **Data Range**: Use `start_time` and `end_time` in config to limit data range
-3. **Position Size**: Lower `position_size_pct` to reduce capital requirements
-4. **Leverage**: Use leverage for smaller capital requirements (higher risk!)
+1. **Quiet Mode**: Use `--quiet` flag for batch runs - skips validation and reduces logging overhead
+2. **Parallel Processing**: Use `--parallel --workers 4` for faster batch processing
+3. **Data Range**: Use `start_time` and `end_time` in config to limit data range
+4. **Position Size**: Lower `position_size_pct` to reduce capital requirements
+5. **Leverage**: Use leverage for smaller capital requirements (higher risk!)
+
+### Performance Benchmarks
+
+| Scenario | Time |
+|----------|------|
+| 3 symbols (verbose) | ~4 min |
+| 572 symbols (quiet) | ~6 min |
+| Per symbol avg | ~0.65 sec |
+
+The framework uses vectorized numpy operations for intrabar simulation (~10x faster than iterative approaches).
 
 ## Requirements
 
@@ -359,7 +375,70 @@ pip install vectorbt pandas numpy
 ## Files
 
 - `backtest_engine.py` - Main backtest engine with factory functions
-- `batch_runner.py` - Batch runner script
+- `batch_runner.py` - Batch runner script (separate portfolios)
+- `unified_portfolio_runner.py` - Unified portfolio runner (single capital pool)
 - `example.py` - Example usage
 - `sample_strategy.py` - Sample custom strategy
 - `batch_results.csv` - Latest batch results
+
+## Unified Portfolio Mode
+
+The framework supports two backtest modes:
+
+### 1. Separate Portfolios (Default)
+Each symbol gets its own capital pool - trades are independent.
+
+```bash
+py batch_runner.py --all --strategy rsi
+```
+
+### 2. Unified Portfolio (Single Capital Pool)
+All symbols share one capital pool with position limits.
+
+```bash
+# Example: 20 max positions, 5% per position
+py unified_portfolio_runner.py --all --strategy rsi \
+    --capital 100000 --max-positions 20 --position-size 0.05
+```
+
+**Key Differences:**
+
+| Feature | Separate | Unified |
+|---------|----------|---------|
+| Capital | $10k per symbol | $100k shared |
+| Positions | Unlimited | Max 20 |
+| Risk | Isolated | Correlated |
+| Realism | No | Yes |
+
+**Unified Portfolio Config:**
+
+```python
+from backtest import UnifiedPortfolioBacktest, UnifiedPortfolioConfig
+
+config = UnifiedPortfolioConfig(
+    initial_capital=100000,    # Single pool for all
+    max_positions=20,           # Max simultaneous trades
+    position_size_pct=0.05,    # 5% of capital per trade
+    tp_pct=0.02,
+    sl_pct=0.01,
+)
+
+engine = UnifiedPortfolioBacktest(
+    config=config,
+    strategy=rsi_strategy,
+    data_dir=r"C:\Personals\Code\backtest-with-bon"
+)
+
+engine.load_data(['BTCUSDT', 'ETHUSDT', 'SOLUSDT'])
+results = engine.run_backtest()
+engine.print_summary()
+```
+
+**Example Results (583 symbols, 20 positions):**
+
+```
+Total Trades: 226
+Win Rate: 30.5%
+Return: -0.62%
+Max DD: 0.68%
+```
