@@ -55,6 +55,42 @@ class BacktestConfig:
     verbose: bool = True              # Enable logging
     skip_validation: bool = False      # Skip data validation for speed
 
+    def validate(self) -> bool:
+        """
+        Validate the backtest configuration.
+
+        Returns:
+            True if configuration is valid
+
+        Raises:
+            ValueError: If configuration is invalid
+        """
+        if self.tp_pct <= 0:
+            raise ValueError(f"tp_pct must be positive, got {self.tp_pct}")
+
+        if self.sl_pct <= 0:
+            raise ValueError(f"sl_pct must be positive, got {self.sl_pct}")
+
+        if self.initial_capital <= 0:
+            raise ValueError(f"initial_capital must be positive, got {self.initial_capital}")
+
+        if self.leverage < 1:
+            raise ValueError(f"leverage must be >= 1, got {self.leverage}")
+
+        if self.position_size_pct <= 0 or self.position_size_pct > 1.0:
+            raise ValueError(f"position_size_pct must be between 0 and 1, got {self.position_size_pct}")
+
+        if self.fee_rate < 0:
+            raise ValueError(f"fee_rate must be non-negative, got {self.fee_rate}")
+
+        if self.slippage < 0:
+            raise ValueError(f"slippage must be non-negative, got {self.slippage}")
+
+        if self.trailing_stop_enabled and self.trailing_stop_pct <= 0:
+            raise ValueError(f"trailing_stop_pct must be positive when trailing_stop is enabled")
+
+        return True
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
         return {

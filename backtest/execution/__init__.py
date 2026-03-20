@@ -6,6 +6,8 @@ from .execution_engine import (
     ExitReason,
     ExitPriority,
     SlippageModel,
+    OrderType,
+    PendingOrder,
     Trade,
 )
 
@@ -17,5 +19,7 @@ __all__ = [
     'ExitReason',
     'ExitPriority',
     'SlippageModel',
+    'OrderType',
+    'PendingOrder',
     'Trade',
 ]

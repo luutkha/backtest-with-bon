@@ -62,6 +62,9 @@ class MetricsCalculator:
         # Risk metrics using vectorbt
         metrics.update(self._vectorbt_risk_metrics(equity_curve))
 
+        # VaR/CVaR and Tail Ratio
+        metrics.update(self._risk_extreme_metrics(equity_curve))
+
         # Trade statistics
         metrics.update(self._trade_statistics(trades_df))
 
@@ -240,8 +243,26 @@ class MetricsCalculator:
                     'volatility': 0.0,
                 }
 
-            # Annualization factor for hourly data
-            annualization = np.sqrt(8760)
+            # Infer annualization factor from data timeframe
+            if 'datetime' in equity_curve.columns or len(equity_curve.index) > 0:
+                # Try to infer timeframe from index
+                if isinstance(equity_curve.index, pd.DatetimeIndex):
+                    # Calculate average time between observations
+                    if len(equity_curve) > 1:
+                        time_diffs = equity_curve.index.to_series().diff().dropna()
+                        avg_diff_hours = time_diffs.mean().total_seconds() / 3600
+                        if avg_diff_hours > 0:
+                            # Annualization: hours per year / avg observation interval
+                            annualization = np.sqrt(8760 / avg_diff_hours)
+                        else:
+                            annualization = np.sqrt(8760)
+                    else:
+                        annualization = np.sqrt(8760)
+                else:
+                    annualization = np.sqrt(8760)
+            else:
+                # Default to hourly
+                annualization = np.sqrt(8760)
 
             # Mean return and std
             mean_return = np.mean(returns)
@@ -263,7 +284,8 @@ class MetricsCalculator:
             drawdown = (running_max - equity) / running_max
             max_dd = np.max(drawdown) if len(drawdown) > 0 else 0.0
 
-            total_return = np.sum(returns)
+            # Use proper total return calculation (end / start - 1)
+            total_return = equity[-1] / equity[0] - 1
             calmar = (total_return / max_dd) if max_dd > 0 else 0.0
 
             # Volatility (annualized)
@@ -282,6 +304,141 @@ class MetricsCalculator:
                 'sortino_ratio': 0.0,
                 'calmar_ratio': 0.0,
                 'volatility': 0.0,
+            }
+
+    def calculate_var(
+        self,
+        returns: np.ndarray,
+        confidence: float = 0.95
+    ) -> float:
+        """
+        Calculate Value at Risk (VaR).
+
+        Args:
+            returns: Array of returns
+            confidence: Confidence level (default 0.95)
+
+        Returns:
+            VaR as a positive number representing potential loss
+        """
+        if len(returns) == 0:
+            return 0.0
+
+        # Use historical method - percentile of returns
+        var = np.percentile(returns, (1 - confidence) * 100)
+        return abs(var)  # Return as positive value
+
+    def calculate_cvar(
+        self,
+        returns: np.ndarray,
+        confidence: float = 0.95
+    ) -> float:
+        """
+        Calculate Conditional Value at Risk (CVaR/Expected Shortfall).
+
+        CVaR is the expected return beyond the VaR threshold.
+
+        Args:
+            returns: Array of returns
+            confidence: Confidence level (default 0.95)
+
+        Returns:
+            CVaR as a positive number representing expected loss beyond VaR
+        """
+        if len(returns) == 0:
+            return 0.0
+
+        var = np.percentile(returns, (1 - confidence) * 100)
+        # Average of all returns below VaR
+        cvar = returns[returns <= var].mean()
+        return abs(cvar) if not np.isnan(cvar) else 0.0
+
+    def calculate_tail_ratio(
+        self,
+        equity_curve: np.ndarray
+    ) -> float:
+        """
+        Calculate Tail Ratio.
+
+        Ratio of 95th percentile return to 5th percentile return.
+        Values > 1 indicate positive skew (more extreme gains than losses).
+
+        Args:
+            equity_curve: Array of equity values
+
+        Returns:
+            Tail ratio (95th / 5th percentile)
+        """
+        if len(equity_curve) < 2:
+            return 0.0
+
+        # Calculate returns from equity curve
+        returns = np.diff(equity_curve) / equity_curve[:-1]
+        returns = returns[~np.isnan(returns)]
+
+        if len(returns) == 0:
+            return 0.0
+
+        percentile_95 = np.percentile(returns, 95)
+        percentile_5 = np.percentile(returns, 5)
+
+        if percentile_5 == 0:
+            return float('inf') if percentile_95 > 0 else 0.0
+
+        return percentile_95 / abs(percentile_5)
+
+    def _risk_extreme_metrics(self, equity_curve: Optional[pd.DataFrame]) -> Dict[str, Any]:
+        """Calculate VaR, CVaR, and Tail Ratio metrics"""
+        if equity_curve is None or len(equity_curve) == 0:
+            return {
+                'var_95': 0.0,
+                'var_99': 0.0,
+                'cvar_95': 0.0,
+                'cvar_99': 0.0,
+                'tail_ratio': 0.0,
+            }
+
+        try:
+            # Calculate returns
+            equity = equity_curve['equity'].values
+            returns = np.diff(equity) / equity[:-1]
+            returns = returns[~np.isnan(returns)]
+
+            if len(returns) == 0:
+                return {
+                    'var_95': 0.0,
+                    'var_99': 0.0,
+                    'cvar_95': 0.0,
+                    'cvar_99': 0.0,
+                    'tail_ratio': 0.0,
+                }
+
+            # VaR at 95% and 99% confidence
+            var_95 = self.calculate_var(returns, 0.95)
+            var_99 = self.calculate_var(returns, 0.99)
+
+            # CVaR at 95% and 99% confidence
+            cvar_95 = self.calculate_cvar(returns, 0.95)
+            cvar_99 = self.calculate_cvar(returns, 0.99)
+
+            # Tail Ratio
+            tail_ratio = self.calculate_tail_ratio(equity)
+
+            return {
+                'var_95': float(var_95),
+                'var_99': float(var_99),
+                'cvar_95': float(cvar_95),
+                'cvar_99': float(cvar_99),
+                'tail_ratio': float(tail_ratio),
+            }
+        except Exception as e:
+            logger.warning(f"Error calculating extreme risk metrics: {e}")
+            return {
+                'var_95': 0.0,
+                'var_99': 0.0,
+                'cvar_95': 0.0,
+                'cvar_99': 0.0,
+                'tail_ratio': 0.0,
             }
 
     def _trade_statistics(self, trades_df: pd.DataFrame) -> Dict[str, Any]:

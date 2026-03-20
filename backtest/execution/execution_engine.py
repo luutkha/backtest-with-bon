@@ -51,6 +51,26 @@ class SlippageModel(Enum):
     RANDOM = "random"         # Random slippage within range
 
 
+class OrderType(Enum):
+    """Order types"""
+    MARKET = "market"   # Market order - execute immediately
+    LIMIT = "limit"     # Limit order - execute when price reaches level
+
+
+@dataclass
+class PendingOrder:
+    """Represents a pending limit order waiting to be filled"""
+    symbol: str
+    side: PositionSide
+    order_time: int           # Timestamp when order was placed
+    limit_price: float        # Price at which order should execute
+    quantity: float
+    leverage: float = 1.0
+    bars_waited: int = 0
+    tp_price: float = 0.0
+    sl_price: float = 0.0
+
+
 @dataclass
 class ExecutionConfig:
     """Execution layer configuration"""
@@ -63,6 +83,10 @@ class ExecutionConfig:
     trailing_stop_enabled: bool = False
     trailing_stop_pct: float = 0.0
     leverage: float = 1.0
+    # Limit order settings
+    order_type: OrderType = OrderType.MARKET
+    limit_order_offset: float = 0.001   # Limit order price offset (0.1% away from market)
+    limit_order_timeout_bars: int = 3   # Max bars to wait for limit order fill (0 = wait indefinitely)
 
 
 @dataclass
@@ -90,6 +114,20 @@ class FillInfo:
     quantity: float
     fee: float
     slippage_applied: float
+
+
+@dataclass
+class LimitOrder:
+    """Pending limit order"""
+    symbol: str
+    side: PositionSide
+    order_type: OrderType
+    limit_price: float  # Price at which to execute
+    quantity: float
+    created_time: int
+    expires_at: Optional[int] = None  # Optional expiration time
+    filled: bool = False
+    cancelled: bool = False
 
 
 @dataclass
@@ -200,6 +238,28 @@ class ExecutionEngine:
     def calculate_fee(self, price: float, quantity: float) -> float:
         """Calculate trading fee"""
         return price * quantity * self.config.fee_rate
+
+    def calculate_limit_price(self, market_price: float, side: PositionSide) -> float:
+        """
+        Calculate limit order price based on configured offset.
+
+        For LONG: limit price below market (buy dip)
+        For SHORT: limit price above market (sell rip)
+
+        Args:
+            market_price: Current market price
+            side: Position side
+
+        Returns:
+            Limit order price
+        """
+        offset = self.config.limit_order_offset
+        if side == PositionSide.LONG:
+            # Buy limit: place below market
+            return market_price * (1 - offset)
+        else:
+            # Sell limit: place above market
+            return market_price * (1 + offset)
 
     def get_entry_price(
         self,
@@ -377,10 +437,125 @@ class IntradaySimulator:
     """
     Simulates trade execution within 1h candle periods using intrabar data.
     Optimized with vectorized operations instead of iterrows().
+    Supports both market and limit orders.
     """
 
     def __init__(self, execution_engine: ExecutionEngine):
         self.execution = execution_engine
+        self.pending_orders: List[PendingOrder] = []
+
+    def create_limit_order(
+        self,
+        symbol: str,
+        side: PositionSide,
+        order_time: int,
+        limit_price: float,
+        quantity: float,
+        tp_price: float = 0.0,
+        sl_price: float = 0.0
+    ) -> PendingOrder:
+        """Create a pending limit order"""
+        order = PendingOrder(
+            symbol=symbol,
+            side=side,
+            order_time=order_time,
+            limit_price=limit_price,
+            quantity=quantity,
+            leverage=self.execution.config.leverage,
+            bars_waited=0,
+            tp_price=tp_price,
+            sl_price=sl_price
+        )
+        self.pending_orders.append(order)
+        return order
+
+    def _check_limit_orders(
+        self,
+        high: float,
+        low: float,
+        open_price: float
+    ) -> List[Tuple[PendingOrder, float]]:
+        """
+        Check pending limit orders and fill any that meet conditions.
+
+        For LIMIT orders:
+        - LONG: Fill when price goes below or to limit_price (buy low)
+        - SHORT: Fill when price goes above or to limit_price (sell high)
+
+        Returns:
+            List of filled orders with their fill prices
+        """
+        filled = []
+        config = self.execution.config
+
+        for order in self.pending_orders[:]:
+            # Check timeout
+            if config.limit_order_timeout_bars > 0:
+                order.bars_waited += 1
+                if order.bars_waited >= config.limit_order_timeout_bars:
+                    self.pending_orders.remove(order)
+                    continue
+
+            # Check fill condition
+            if order.side == PositionSide.LONG:
+                # Fill if price touched or went below limit price
+                if low <= order.limit_price:
+                    # Fill at limit price or better (lower)
+                    fill_price = min(order.limit_price, low, open_price)
+                    filled.append((order, fill_price))
+                    self.pending_orders.remove(order)
+            else:  # SHORT
+                # Fill if price touched or went above limit price
+                if high >= order.limit_price:
+                    # Fill at limit price or better (higher)
+                    fill_price = max(order.limit_price, high, open_price)
+                    filled.append((order, fill_price))
+                    self.pending_orders.remove(order)
+
+        return filled
+
+    def cancel_orders_for_symbol(self, symbol: str) -> None:
+        """Cancel all pending orders for a symbol"""
+        self.pending_orders = [o for o in self.pending_orders if o.symbol != symbol]
+
+    def has_pending_orders(self, symbol: str = None) -> bool:
+        """Check if there are pending orders"""
+        if symbol is None:
+            return len(self.pending_orders) > 0
+        return any(o.symbol == symbol for o in self.pending_orders)
+
+    def _execute_filled_limit_order(
+        self,
+        order: PendingOrder,
+        fill_price: float,
+        h1_data: pd.DataFrame,
+        trades: List[Trade],
+        capital: float,
+        current_time: int
+    ) -> Tuple[Optional[Position], float]:
+        """Execute a filled limit order and create a position"""
+        # Cancel any other pending orders for this symbol to prevent duplicates
+        self.cancel_orders_for_symbol(order.symbol)
+
+        position = Position(
+            symbol=order.symbol,
+            side=order.side,
+            entry_time=current_time,
+            entry_price=fill_price,
+            quantity=order.quantity,
+            leverage=order.leverage,
+            tp_price=order.tp_price,
+            sl_price=order.sl_price,
+            highest_price=fill_price,
+            lowest_price=fill_price,
+            bars_held=0
+        )
+
+        # Deduct entry fee
+        entry_fee = self.execution.calculate_fee(fill_price, order.quantity)
+        capital -= entry_fee
+
+        return position, capital
 
     def simulate(
         self,
@@ -412,6 +587,9 @@ class IntradaySimulator:
         trades = []
         position: Optional[Position] = None
 
+        # Reset pending orders for each backtest run
+        self.pending_orders = []
+
         # Pre-compute signal lookup dictionaries for O(1) access
         long_signal_dict = dict(zip(long_signals.index, long_signals.values))
         short_signal_dict = dict(zip(short_signals.index, short_signals.values))
@@ -442,6 +620,26 @@ class IntradaySimulator:
             # Get m1 candle indices for this 1h period
             start_idx = m1_h1_indices[h1_idx]
             end_idx = m1_h1_indices[h1_idx + 1] if h1_idx + 1 < h1_len else len(m1_timestamps)
+
+            # Check for pending limit order fills before checking exits
+            if len(self.pending_orders) > 0 and end_idx > start_idx:
+                period_highs = m1_highs[start_idx:end_idx]
+                period_lows = m1_lows[start_idx:end_idx]
+                period_opens = m1_opens[start_idx:end_idx]
+                period_times = m1_timestamps[start_idx:end_idx]
+
+                # Check each pending order
+                filled_orders = self._check_limit_orders(
+                    high=period_highs.max(),
+                    low=period_lows.min(),
+                    open_price=period_opens[0] if len(period_opens) > 0 else h1_close
+                )
+
+                for order, fill_price in filled_orders:
+                    if position is None:
+                        position, capital = self._execute_filled_limit_order(
+                            order, fill_price, h1_data, trades, capital, h1_time
+                        )
 
             # Check if there's an open position and we have intrabar data
             if position is not None and end_idx > start_idx:
@@ -484,45 +682,73 @@ class IntradaySimulator:
 
             # After processing intrabar candles, check for entry signals at close of this 1h candle
             if position is None:
+                order_type = self.execution.config.order_type
+
                 # Check long entry
                 if long_signal_dict.get(h1_time, False):
                     side = PositionSide.LONG
-                    entry_price = self.execution.apply_slippage(h1_close, side)
                     quantity = self.execution.calculate_position_size(
-                        capital, position_size_pct, entry_price
+                        capital, position_size_pct, h1_close
                     )
 
-                    position = self.execution.create_position(
-                        symbol=h1_data.get('symbol', 'UNKNOWN'),
-                        side=side,
-                        entry_time=h1_time,
-                        entry_price=entry_price,
-                        quantity=quantity
-                    )
-
-                    # Deduct entry fee
-                    entry_fee = self.execution.calculate_fee(entry_price, quantity)
-                    capital -= entry_fee
+                    if order_type == OrderType.LIMIT:
+                        # Create pending limit order
+                        limit_price = self.execution.calculate_limit_price(h1_close, side)
+                        tp_price, sl_price = self.execution.calculate_tp_sl(h1_close, side)
+                        self.create_limit_order(
+                            symbol=h1_data.get('symbol', 'UNKNOWN'),
+                            side=side,
+                            order_time=h1_time,
+                            limit_price=limit_price,
+                            quantity=quantity,
+                            tp_price=tp_price,
+                            sl_price=sl_price
+                        )
+                    else:
+                        # Market order - execute immediately
+                        entry_price = self.execution.apply_slippage(h1_close, side)
+                        position = self.execution.create_position(
+                            symbol=h1_data.get('symbol', 'UNKNOWN'),
+                            side=side,
+                            entry_time=h1_time,
+                            entry_price=entry_price,
+                            quantity=quantity
+                        )
+                        entry_fee = self.execution.calculate_fee(entry_price, quantity)
+                        capital -= entry_fee
 
                 # Check short entry
                 elif short_signal_dict.get(h1_time, False):
                     side = PositionSide.SHORT
-                    entry_price = self.execution.apply_slippage(h1_close, side)
                     quantity = self.execution.calculate_position_size(
-                        capital, position_size_pct, entry_price
+                        capital, position_size_pct, h1_close
                     )
 
-                    position = self.execution.create_position(
-                        symbol=h1_data.get('symbol', 'UNKNOWN'),
-                        side=side,
-                        entry_time=h1_time,
-                        entry_price=entry_price,
-                        quantity=quantity
-                    )
-
-                    # Deduct entry fee
-                    entry_fee = self.execution.calculate_fee(entry_price, quantity)
-                    capital -= entry_fee
+                    if order_type == OrderType.LIMIT:
+                        # Create pending limit order
+                        limit_price = self.execution.calculate_limit_price(h1_close, side)
+                        tp_price, sl_price = self.execution.calculate_tp_sl(h1_close, side)
+                        self.create_limit_order(
+                            symbol=h1_data.get('symbol', 'UNKNOWN'),
+                            side=side,
+                            order_time=h1_time,
+                            limit_price=limit_price,
+                            quantity=quantity,
+                            tp_price=tp_price,
+                            sl_price=sl_price
+                        )
+                    else:
+                        # Market order - execute immediately
+                        entry_price = self.execution.apply_slippage(h1_close, side)
+                        position = self.execution.create_position(
+                            symbol=h1_data.get('symbol', 'UNKNOWN'),
+                            side=side,
+                            entry_time=h1_time,
+                            entry_price=entry_price,
+                            quantity=quantity
+                        )
+                        entry_fee = self.execution.calculate_fee(entry_price, quantity)
+                        capital -= entry_fee
 
             # Check exit signals (manual exit)
             if position is not None:

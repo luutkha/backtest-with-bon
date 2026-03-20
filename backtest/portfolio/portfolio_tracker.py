@@ -25,6 +25,7 @@ class PositionSizeModel(Enum):
     FIXED = "fixed"              # Fixed quantity per trade
     FIXED_PERCENT = "fixed_pct"  # Fixed percentage of capital
     RISK_BASED = "risk_based"    # Risk-based sizing
+    DRAWDOWN_ADJUSTED = "drawdown_adjusted"  # Adjusts size based on drawdown
 
 
 @dataclass
@@ -35,6 +36,11 @@ class PortfolioConfig:
     position_size_pct: float = 0.95    # For FIXED_PERCENT model
     risk_per_trade: float = 0.02       # For RISK_BASED model (2% risk)
     max_position_pct: float = 1.0       # Max position size as % of capital
+    # For DRAWDOWN_ADJUSTED model
+    drawdown_reduction_factor: float = 0.5  # Reduce size by this factor in drawdown
+    drawdown_threshold: float = 0.05    # Start reducing at 5% drawdown
+    max_size_multiplier: float = 1.5   # Max size multiplier when not in drawdown
+    min_size_multiplier: float = 0.25   # Min size multiplier at max drawdown
 
 
 @dataclass
@@ -56,6 +62,7 @@ class PositionState:
     quantity: float
     entry_time: int
     unrealized_pnl: float = 0.0
+    leverage: float = 1.0
 
 
 class PortfolioTracker:
@@ -69,6 +76,7 @@ class PortfolioTracker:
         self.cash = config.initial_capital
         self.realized_pnl = 0.0
         self.position: Optional[PositionState] = None
+        self.peak_equity = config.initial_capital  # Track peak equity for drawdown
 
         # Equity curve
         self.equity_curve: List[PortfolioSnapshot] = []
@@ -76,15 +84,45 @@ class PortfolioTracker:
         # Trade history
         self.trades: List[Dict[str, Any]] = []
 
+    def get_current_drawdown(self) -> float:
+        """Calculate current drawdown as a fraction (0-1)"""
+        current_equity = self.get_equity()
+        if self.peak_equity <= 0:
+            return 0.0
+        drawdown = (self.peak_equity - current_equity) / self.peak_equity
+        return max(0.0, drawdown)
+
+    def get_size_multiplier(self) -> float:
+        """
+        Calculate position size multiplier based on drawdown.
+        Returns higher multiplier when not in drawdown, lower when in drawdown.
+        """
+        drawdown = self.get_current_drawdown()
+        threshold = self.config.drawdown_threshold
+
+        if drawdown <= threshold:
+            # No drawdown or below threshold - use max size
+            return self.config.max_size_multiplier
+
+        # Linear interpolation between min and max based on drawdown
+        # At threshold = min_multiplier, at some high drawdown = max reduction
+        dd_range = 0.25  # Assume full reduction at 25% drawdown
+        normalized_dd = min(1.0, (drawdown - threshold) / dd_range)
+
+        multiplier = self.config.max_size_multiplier - (
+            (self.config.max_size_multiplier - self.config.min_size_multiplier) * normalized_dd
+        )
+        return max(self.config.min_size_multiplier, multiplier)
+
     def get_equity(self, current_price: float = 0.0) -> float:
         """Calculate current equity"""
         position_value = 0.0
 
         if self.position is not None and current_price > 0:
             if self.position.side == "long":
-                position_value = (current_price - self.position.entry_price) * self.position.quantity
+                position_value = (current_price - self.position.entry_price) * self.position.quantity * self.position.leverage
             else:
-                position_value = (self.position.entry_price - current_price) * self.position.quantity
+                position_value = (self.position.entry_price - current_price) * self.position.quantity * self.position.leverage
 
         return self.cash + self.realized_pnl + position_value
 
@@ -94,9 +132,9 @@ class PortfolioTracker:
             return 0.0
 
         if self.position.side == "long":
-            return (current_price - self.position.entry_price) * self.position.quantity
+            return (current_price - self.position.entry_price) * self.position.quantity * self.position.leverage
         else:
-            return (self.position.entry_price - current_price) * self.position.quantity
+            return (self.position.entry_price - current_price) * self.position.quantity * self.position.leverage
 
     def calculate_position_size(
         self,
@@ -138,6 +176,15 @@ class PortfolioTracker:
             quantity = risk_amount / price_risk
             return quantity
 
+        elif self.config.position_size_model == PositionSizeModel.DRAWDOWN_ADJUSTED:
+            # Drawdown-adjusted: use base percentage but adjust based on drawdown
+            base_available = self.cash * self.config.position_size_pct
+            size_multiplier = self.get_size_multiplier()
+            adjusted_available = base_available * size_multiplier
+            position_value = adjusted_available * leverage
+            quantity = position_value / entry_price
+            return quantity
+
         return 0.0
 
     def open_position(
@@ -146,7 +193,8 @@ class PortfolioTracker:
         entry_price: float,
         quantity: float,
         entry_time: int,
-        entry_fee: float
+        entry_fee: float,
+        leverage: float = 1.0
     ) -> None:
         """Open a new position"""
         if self.position is not None:
@@ -161,7 +209,8 @@ class PortfolioTracker:
             entry_price=entry_price,
             quantity=quantity,
             entry_time=entry_time,
-            unrealized_pnl=0.0
+            unrealized_pnl=0.0,
+            leverage=leverage
         )
 
         logger.info(f"Opened {side} position: price={entry_price}, qty={quantity}")
@@ -177,11 +226,11 @@ class PortfolioTracker:
         if self.position is None:
             return {}
 
-        # Calculate PnL
+        # Calculate PnL with leverage multiplier
         if self.position.side == "long":
-            pnl = (exit_price - self.position.entry_price) * self.position.quantity
+            pnl = (exit_price - self.position.entry_price) * self.position.quantity * self.position.leverage
         else:
-            pnl = (self.position.entry_price - exit_price) * self.position.quantity
+            pnl = (self.position.entry_price - exit_price) * self.position.quantity * self.position.leverage
 
         # Deduct exit fee
         pnl -= exit_fee
@@ -191,6 +240,11 @@ class PortfolioTracker:
 
         # Update cash
         self.cash += (exit_price * self.position.quantity) + pnl
+
+        # Update peak equity after trade closes
+        current_equity = self.get_equity()
+        if current_equity > self.peak_equity:
+            self.peak_equity = current_equity
 
         # Create trade record
         trade = {

@@ -6,49 +6,52 @@ A production-grade backtesting framework for futures trading strategies using Py
 
 ```
 backtest/
-├── __init__.py              # Package exports
-├── backtest_engine.py       # Main orchestrator
+├── __init__.py                    # Package exports
+├── backtest_engine.py             # Main orchestrator (BacktestEngine + factory functions)
 ├── config/
-│   └── __init__.py         # BacktestConfig
+│   └── __init__.py               # BacktestConfig, Timeframe enum
 ├── data/
-│   └── data_loader.py       # Data Layer: load, validate, align
+│   └── data_loader.py            # DataLoader, DataConfig
 ├── signals/
-│   └── signal_generator.py  # Signal Layer: strategies + indicators
+│   ├── __init__.py               # Signal exports
+│   ├── signal_generator.py       # SignalGenerator, Signal, SignalType + strategies + indicators
+│   └── streak_breakout_strategy.py  # StreakConfig, streak_breakout_strategy, ma_streak_strategy
 ├── execution/
-│   └── execution_engine.py  # Execution Layer: intrabar simulation
+│   └── execution_engine.py       # ExecutionEngine, IntradaySimulator, Trade, enums
 ├── portfolio/
-│   └── portfolio_tracker.py # Portfolio Layer: capital tracking
+│   └── portfolio_tracker.py      # PortfolioTracker, PortfolioConfig, PositionSizeModel
 ├── analytics/
-│   └── metrics_calculator.py # Analytics Layer (vectorbt)
-└── reporting/
-    └── report_generator.py  # Reporting Layer
+│   └── metrics_calculator.py     # MetricsCalculator (vectorbt)
+├── reporting/
+│   └── report_generator.py       # ReportGenerator
+└── unified_portfolio.py          # UnifiedPortfolioBacktest, UnifiedPortfolioConfig
 ```
 
 ## Quick Start
 
-### Run Batch Test
+### Run Batch Test (Unified Portfolio Mode)
 
 ```bash
 # Single symbol
-py batch_runner.py --symbols BTCUSDT --strategy rsi
+py unified_portfolio_runner.py --symbols BTCUSDT --strategy streak
 
 # Multiple symbols
-py batch_runner.py --symbols BTCUSDT ETHUSDT BNBUSDT SOLUSDT --strategy rsi
+py unified_portfolio_runner.py --symbols BTCUSDT ETHUSDT BNBUSDT SOLUSDT --strategy streak
 
 # All available symbols
-py batch_runner.py --all --strategy rsi
+py unified_portfolio_runner.py --all --strategy streak
 
 # Custom TP/SL
-py batch_runner.py --symbols BTCUSDT --strategy rsi --tp 0.03 --sl 0.015
+py unified_portfolio_runner.py --symbols BTCUSDT --strategy streak --tp 0.03 --sl 0.015
 
-# Custom leverage
-py batch_runner.py --symbols BTCUSDT --strategy rsi --leverage 3
+# Custom capital and positions
+py unified_portfolio_runner.py --all --strategy streak --capital 100000 --max-positions 20 --position-size 0.05
 
 # Save results
-py batch_runner.py --symbols BTCUSDT --output results.csv
+py unified_portfolio_runner.py --symbols BTCUSDT --output results.csv
 
 # Quiet mode (faster - skips validation, reduces logging)
-py batch_runner.py --all --strategy rsi --quiet
+py unified_portfolio_runner.py --all --strategy streak --quiet
 ```
 
 ### Run Single Test
@@ -81,7 +84,7 @@ print(results['metrics']['profit_factor'])
 ### Factory Functions
 
 ```python
-from backtest.backtest_engine import create_rsi_backtest, create_ma_crossover_backtest
+from backtest import create_rsi_backtest, create_ma_crossover_backtest, create_streak_breakout_backtest
 
 # Quick RSI backtest
 engine = create_rsi_backtest(
@@ -99,6 +102,17 @@ engine = create_ma_crossover_backtest(
     fast_period=20,
     slow_period=50,
 )
+
+# Quick Streak Breakout backtest
+engine = create_streak_breakout_backtest(
+    data_dir=r"C:\Personals\Code\backtest-with-bon",
+    symbol="BTCUSDT",
+    atr_window_min=1.0,
+    atr_window_max=6.0,
+    consecutive_candles=4,
+    risk_reward_ratio_sl=0.5,
+    risk_reward_ratio_tp=1.5,
+)
 ```
 
 ## Configuration
@@ -107,40 +121,55 @@ engine = create_ma_crossover_backtest(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `data_dir` | str | "" | Data directory path |
-| `symbol` | str | "BTCUSDT" | Trading symbol |
-| `h1_timeframe` | str | "1h" | Higher timeframe for signals |
-| `intrabar_timeframe` | str | "5m" | Intraday timeframe for simulation |
-| `start_time` | int | None | Start time in milliseconds |
-| `end_time` | int | None | End time in milliseconds |
-| `initial_capital` | float | 10000 | Starting capital |
-| `fee_rate` | float | 0.0004 | Fee per side (0.04%) |
-| `slippage` | float | 0.0001 | Slippage % |
-| `tp_pct` | float | 0.02 | Take profit % |
-| `sl_pct` | float | 0.01 | Stop loss % |
-| `leverage` | float | 1.0 | Leverage multiplier |
-| `position_size_pct` | float | 0.95 | Position size % of capital |
-| `trailing_stop_enabled` | bool | False | Enable trailing stop |
-| `trailing_stop_pct` | float | 0.0 | Trailing stop percentage |
-| `position_size_model` | PositionSizeModel | FIXED_PERCENT | Position sizing model |
-| `risk_per_trade` | float | 0.02 | Risk per trade % |
-| `exit_priority` | ExitPriority | CONSERVATIVE | TP/SL priority |
-| `verbose` | bool | True | Enable logging |
-| `skip_validation` | bool | False | Skip data validation for speed |
+| `data_dir` | str | `""` | Data directory path |
+| `symbol` | str | `"BTCUSDT"` | Trading symbol |
+| `h1_timeframe` | str | `"1h"` | Higher timeframe for signals |
+| `intrabar_timeframe` | str | `"5m"` | Intraday timeframe for simulation |
+| `start_time` | int | `None` | Start time in milliseconds |
+| `end_time` | int | `None` | End time in milliseconds |
+| `initial_capital` | float | `10000.0` | Starting capital |
+| `fee_rate` | float | `0.0004` | Fee per side (0.04%) |
+| `slippage` | float | `0.0001` | Slippage % |
+| `exit_priority` | ExitPriority | `CONSERVATIVE` | TP/SL priority |
+| `tp_pct` | float | `0.02` | Take profit % |
+| `sl_pct` | float | `0.01` | Stop loss % |
+| `trailing_stop_enabled` | bool | `False` | Enable trailing stop |
+| `trailing_stop_pct` | float | `0.0` | Trailing stop percentage |
+| `leverage` | float | `1.0` | Leverage multiplier |
+| `position_size_model` | PositionSizeModel | `FIXED_PERCENT` | Position sizing model |
+| `position_size_pct` | float | `0.95` | Position size % of capital |
+| `risk_per_trade` | float | `0.02` | Risk per trade % |
+| `verbose` | bool | `True` | Enable logging |
+| `skip_validation` | bool | `False` | Skip data validation for speed |
 
-### Command Line Arguments
+### UnifiedPortfolioConfig Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `initial_capital` | float | `100000.0` | Single capital pool for all symbols |
+| `max_positions` | int | `10` | Max simultaneous trades |
+| `position_size_pct` | float | `0.1` | 10% per position |
+| `fee_rate` | float | `0.0004` | Fee per side |
+| `slippage` | float | `0.0001` | Slippage % |
+| `tp_pct` | float | `0.02` | Take profit % |
+| `sl_pct` | float | `0.01` | Stop loss % |
+| `leverage` | float | `1.0` | Leverage multiplier |
+| `exit_priority` | ExitPriority | `CONSERVATIVE` | TP/SL priority |
+| `verbose` | bool | `True` | Enable logging |
+
+### Command Line Arguments (unified_portfolio_runner.py)
 
 ```bash
---symbols SYMBOLS    # Symbols to test
---all                # Run on all available symbols
---strategy STRATEGY  # rsi, ma, macd
---tp TP              # Take profit %
---sl SL              # Stop loss %
---leverage LEV       # Leverage
---capital CAP        # Initial capital
+--symbols SYMBOLS    # Symbols to test (default: BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT)
+--all                 # Run on all available symbols
+--strategy STRATEGY  # streak (currently only active strategy)
+--tp TP              # Take profit % (default: 0.02)
+--sl SL              # Stop loss % (default: 0.01)
+--leverage LEV       # Leverage (default: 1.0)
+--capital CAP        # Initial capital (default: 100000)
+--max-positions N    # Max simultaneous positions (default: 10)
+--position-size PCT  # Position size % (default: 0.1 = 10%)
 --output FILE        # Output CSV file
---parallel           # Run in parallel (default: True)
---workers N          # Max parallel workers (default: 4)
 --quiet              # Suppress output
 --data-dir PATH      # Data directory (default: C:\Personals\Code\backtest-with-bon)
 ```
@@ -149,20 +178,31 @@ engine = create_ma_crossover_backtest(
 
 ### Built-in Strategies
 
-1. **RSI Strategy** (`rsi`)
-   - Long: RSI crosses above oversold (30)
-   - Short: RSI crosses below overbought (70)
+1. **RSI Strategy** (`rsi_strategy`)
+   - Long: RSI crosses above oversold (default 30)
+   - Short: RSI crosses below overbought (default 70)
    - Parameters: `rsi_period`, `oversold`, `overbought`
 
-2. **MA Crossover** (`ma`)
+2. **MA Crossover** (`moving_average_crossover_strategy`)
    - Long: Fast MA crosses above Slow MA
    - Short: Fast MA crosses below Slow MA
    - Parameters: `fast_period`, `slow_period`
 
-3. **MACD** (`macd`)
+3. **MACD** (`macd_strategy`)
    - Long: MACD crosses above signal line
    - Short: MACD crosses below signal line
    - Parameters: `fast_period`, `slow_period`, `signal_period`
+
+4. **Streak Breakout** (`streak_breakout_strategy`)
+   - Long: After N consecutive green candles (default 4)
+   - Short: After N consecutive red candles
+   - Includes ATR filter for volatility confirmation
+   - Optional volume and ADX filters
+   - Parameters: `atr_window_min`, `atr_window_max`, `consecutive_candles`, `risk_reward_ratio_sl`, `risk_reward_ratio_tp`
+
+5. **MA Streak** (`ma_streak_strategy`)
+   - Combines streak breakout with MA filter
+   - Only trades in direction of long-term trend
 
 ### Custom Strategy
 
@@ -231,7 +271,23 @@ SignalType.LONG_ENTRY    # Enter long position
 SignalType.SHORT_ENTRY   # Enter short position
 SignalType.LONG_EXIT     # Exit long position
 SignalType.SHORT_EXIT    # Exit short position
-SignalType.FLAT           # Close all positions
+SignalType.FLAT          # Close all positions
+```
+
+### Enums
+
+```python
+from backtest.config import Timeframe
+Timeframe.M1, Timeframe.M5, Timeframe.M15, Timeframe.H1, Timeframe.H4, Timeframe.D1
+
+from backtest.execution import PositionSide, ExitReason, ExitPriority, SlippageModel
+PositionSide.LONG, PositionSide.SHORT
+ExitReason.TAKE_PROFIT, ExitReason.STOP_LOSS, ExitReason.TRAILING_STOP, ExitReason.MANUAL, ExitReason.ENDT_OF_DATA, ExitReason.SIGNAL_EXIT
+ExitPriority.CONSERVATIVE (SL first), ExitPriority.AGGRESSIVE (TP first)
+SlippageModel.FIXED, SlippageModel.VOLUME_BASED, SlippageModel.RANDOM
+
+from backtest.portfolio import PositionSizeModel
+PositionSizeModel.FIXED, PositionSizeModel.FIXED_PERCENT, PositionSizeModel.RISK_BASED
 ```
 
 ## Data Format
@@ -292,17 +348,18 @@ The framework calculates these metrics:
 | `volatility` | Annualized volatility % |
 | `avg_trade_duration` | Average trade duration in hours |
 | `exit_reasons` | Dict of exit reasons and counts |
+| `avg_leverage` | Average leverage used |
 
 ### Exit Reasons
 
 | Reason | Description |
 |--------|-------------|
-| `tp` | Take profit |
-| `sl` | Stop loss |
-| `trailing_stop` | Trailing stop triggered |
-| `signal_exit` | Exit signal generated |
-| `end_of_data` | Position closed at end of data |
-| `manual` | Manual exit |
+| `TAKE_PROFIT` | Take profit triggered |
+| `STOP_LOSS` | Stop loss triggered |
+| `TRAILING_STOP` | Trailing stop triggered |
+| `SIGNAL_EXIT` | Exit signal generated |
+| `ENDT_OF_DATA` | Position closed at end of data |
+| `MANUAL` | Manual exit |
 
 ## Common Errors
 
@@ -338,24 +395,15 @@ ValueError: No overlapping time range between 1h and 5m data
 
 ### Memory issues with large datasets
 
-- Reduce `--workers` to 1 for sequential processing
 - Process symbols in smaller batches
+- Use `--quiet` flag to reduce memory overhead
 
 ## Performance Tips
 
 1. **Quiet Mode**: Use `--quiet` flag for batch runs - skips validation and reduces logging overhead
-2. **Parallel Processing**: Use `--parallel --workers 4` for faster batch processing
-3. **Data Range**: Use `start_time` and `end_time` in config to limit data range
-4. **Position Size**: Lower `position_size_pct` to reduce capital requirements
-5. **Leverage**: Use leverage for smaller capital requirements (higher risk!)
-
-### Performance Benchmarks
-
-| Scenario | Time |
-|----------|------|
-| 3 symbols (verbose) | ~4 min |
-| 572 symbols (quiet) | ~6 min |
-| Per symbol avg | ~0.65 sec |
+2. **Data Range**: Use `start_time` and `end_time` in config to limit data range
+3. **Position Size**: Lower `position_size_pct` to reduce capital requirements
+4. **Leverage**: Use leverage for smaller capital requirements (higher risk!)
 
 The framework uses vectorized numpy operations for intrabar simulation (~10x faster than iterative approaches).
 
@@ -374,50 +422,44 @@ pip install vectorbt pandas numpy
 
 ## Files
 
-- `backtest_engine.py` - Main backtest engine with factory functions
-- `batch_runner.py` - Batch runner script (separate portfolios)
-- `unified_portfolio_runner.py` - Unified portfolio runner (single capital pool)
+- `backtest/__init__.py` - Package exports
+- `backtest/backtest_engine.py` - Main backtest engine with factory functions
+- `backtest/unified_portfolio.py` - Unified portfolio backtest implementation
+- `unified_portfolio_runner.py` - CLI runner for unified portfolio mode
 - `example.py` - Example usage
-- `sample_strategy.py` - Sample custom strategy
-- `batch_results.csv` - Latest batch results
+- `sample_strategy.py` - Sample custom strategy (old architecture)
+- `backtest_engine.py` - Legacy single-file backtest engine (old architecture)
 
 ## Unified Portfolio Mode
 
-The framework supports two backtest modes:
+The framework runs in unified portfolio mode where all symbols share a single capital pool.
 
-### 1. Separate Portfolios (Default)
-Each symbol gets its own capital pool - trades are independent.
-
-```bash
-py batch_runner.py --all --strategy rsi
-```
-
-### 2. Unified Portfolio (Single Capital Pool)
-All symbols share one capital pool with position limits.
+### Running Unified Portfolio
 
 ```bash
 # Example: 20 max positions, 5% per position
-py unified_portfolio_runner.py --all --strategy rsi \
+py unified_portfolio_runner.py --all --strategy streak \
     --capital 100000 --max-positions 20 --position-size 0.05
 ```
 
-**Key Differences:**
+**Key Features:**
 
-| Feature | Separate | Unified |
-|---------|----------|---------|
-| Capital | $10k per symbol | $100k shared |
-| Positions | Unlimited | Max 20 |
-| Risk | Isolated | Correlated |
-| Realism | No | Yes |
+| Feature | Value |
+|---------|-------|
+| Capital | $100k shared (default) |
+| Positions | Max 20 (default: 10) |
+| Position Size | 10% per trade (default) |
+| Risk | Correlated across symbols |
 
-**Unified Portfolio Config:**
+**Unified Portfolio API:**
 
 ```python
 from backtest import UnifiedPortfolioBacktest, UnifiedPortfolioConfig
+from backtest.signals import rsi_strategy
 
 config = UnifiedPortfolioConfig(
     initial_capital=100000,    # Single pool for all
-    max_positions=20,           # Max simultaneous trades
+    max_positions=20,         # Max simultaneous trades
     position_size_pct=0.05,    # 5% of capital per trade
     tp_pct=0.02,
     sl_pct=0.01,
@@ -434,11 +476,15 @@ results = engine.run_backtest()
 engine.print_summary()
 ```
 
-**Example Results (583 symbols, 20 positions):**
+## Results Structure
 
-```
-Total Trades: 226
-Win Rate: 30.5%
-Return: -0.62%
-Max DD: 0.68%
+```python
+{
+    'config': {...},           # Configuration dict
+    'metrics': {...},          # All calculated metrics
+    'trades': [...],           # List of Trade objects
+    'trades_df': DataFrame,    # Trades as DataFrame
+    'equity_df': DataFrame,    # Equity curve
+    'final_capital': float
+}
 ```

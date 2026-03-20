@@ -40,6 +40,42 @@ class UnifiedPortfolioConfig:
     exit_priority: ExitPriority = ExitPriority.CONSERVATIVE
     verbose: bool = True
 
+    def validate(self) -> bool:
+        """
+        Validate the unified portfolio configuration.
+
+        Returns:
+            True if configuration is valid
+
+        Raises:
+            ValueError: If configuration is invalid
+        """
+        if self.tp_pct <= 0:
+            raise ValueError(f"tp_pct must be positive, got {self.tp_pct}")
+
+        if self.sl_pct <= 0:
+            raise ValueError(f"sl_pct must be positive, got {self.sl_pct}")
+
+        if self.initial_capital <= 0:
+            raise ValueError(f"initial_capital must be positive, got {self.initial_capital}")
+
+        if self.max_positions < 1:
+            raise ValueError(f"max_positions must be >= 1, got {self.max_positions}")
+
+        if self.leverage < 1:
+            raise ValueError(f"leverage must be >= 1, got {self.leverage}")
+
+        if self.position_size_pct <= 0 or self.position_size_pct > 1.0:
+            raise ValueError(f"position_size_pct must be between 0 and 1, got {self.position_size_pct}")
+
+        if self.fee_rate < 0:
+            raise ValueError(f"fee_rate must be non-negative, got {self.fee_rate}")
+
+        if self.slippage < 0:
+            raise ValueError(f"slippage must be non-negative, got {self.slippage}")
+
+        return True
+
 
 class UnifiedPortfolioBacktest:
     """
@@ -72,12 +108,16 @@ class UnifiedPortfolioBacktest:
         # Data loader
         self.data_loader = DataLoader(DataConfig(base_path=data_dir))
 
+        # Metrics calculator
+        self.metrics_calculator = MetricsCalculator()
+
         # State
         self.symbols: List[str] = []
         self.symbol_data: Dict[str, pd.DataFrame] = {}
         self.symbol_m1_data: Dict[str, pd.DataFrame] = {}
         self.all_trades: List[Trade] = []
         self.capital: float = config.initial_capital
+        self.equity_df: Optional[pd.DataFrame] = None
 
     def load_data(self, symbols: List[str]) -> None:
         """Load data for all symbols"""
@@ -212,7 +252,11 @@ class UnifiedPortfolioBacktest:
                         pnl = (pos['entry_price'] - exit_price) * pos['quantity'] * self.config.leverage
 
                     exit_fee = self.execution_engine.calculate_fee(exit_price, pos['quantity'])
-                    pnl -= exit_fee
+                    entry_fee = pos.get('entry_fee', 0)
+
+                    # Deduct both entry and exit fees from PnL
+                    total_fees = entry_fee + exit_fee
+                    pnl -= total_fees
 
                     # Return capital + PnL
                     allocated = pos['entry_price'] * pos['quantity'] / self.config.leverage
@@ -228,7 +272,7 @@ class UnifiedPortfolioBacktest:
                         quantity=pos['quantity'],
                         pnl=pnl,
                         pnl_pct=(pnl / allocated * 100) if allocated > 0 else 0,
-                        fees=exit_fee,
+                        fees=total_fees,
                         hold_bars=pos['bars_held'],
                         exit_reason=exit_reason,
                         leverage=self.config.leverage,
@@ -273,7 +317,7 @@ class UnifiedPortfolioBacktest:
 
                     tp_price, sl_price = self.execution_engine.calculate_tp_sl(entry_price, side)
 
-                    # Deduct entry fee
+                    # Calculate entry fee
                     entry_fee = self.execution_engine.calculate_fee(entry_price, quantity)
                     allocated = entry_price * quantity / self.config.leverage
 
@@ -287,10 +331,11 @@ class UnifiedPortfolioBacktest:
                         'highest': entry_price,
                         'lowest': entry_price,
                         'bars_held': 0,
+                        'entry_fee': entry_fee,  # Track entry fee for deduction at exit
                     }
 
-                    # Deduct capital
-                    self.capital -= (allocated + entry_fee)
+                    # Deduct only the allocated margin (fees will be deducted at exit)
+                    self.capital -= allocated
                     slots -= 1
 
                     if slots <= 0:
@@ -311,7 +356,11 @@ class UnifiedPortfolioBacktest:
                 pnl = (pos['entry_price'] - exit_price) * pos['quantity'] * self.config.leverage
 
             exit_fee = self.execution_engine.calculate_fee(exit_price, pos['quantity'])
-            pnl -= exit_fee
+            entry_fee = pos.get('entry_fee', 0)
+
+            # Deduct both entry and exit fees from PnL
+            total_fees = entry_fee + exit_fee
+            pnl -= total_fees
 
             allocated = pos['entry_price'] * pos['quantity'] / self.config.leverage
             self.capital += allocated + pnl
@@ -326,7 +375,7 @@ class UnifiedPortfolioBacktest:
                 quantity=pos['quantity'],
                 pnl=pnl,
                 pnl_pct=(pnl / allocated * 100) if allocated > 0 else 0,
-                fees=exit_fee,
+                fees=total_fees,
                 hold_bars=pos['bars_held'],
                 exit_reason='end_of_data',
                 leverage=self.config.leverage,
@@ -335,6 +384,9 @@ class UnifiedPortfolioBacktest:
 
         # Calculate metrics
         metrics = self._calculate_metrics()
+
+        # Create trades DataFrame
+        trades_df = self._trades_to_dataframe()
 
         return {
             'config': {
@@ -345,49 +397,59 @@ class UnifiedPortfolioBacktest:
             },
             'metrics': metrics,
             'trades': self.all_trades,
+            'trades_df': trades_df,
+            'equity_df': self.equity_df,
             'final_capital': self.capital,
         }
 
+    def _trades_to_dataframe(self) -> pd.DataFrame:
+        """Convert trades list to DataFrame"""
+        if not self.all_trades:
+            return pd.DataFrame()
+
+        records = []
+        for trade in self.all_trades:
+            records.append({
+                'symbol': trade.symbol,
+                'side': trade.side.value if hasattr(trade.side, 'value') else trade.side,
+                'entry_time': trade.entry_time,
+                'exit_time': trade.exit_time,
+                'entry_price': trade.entry_price,
+                'exit_price': trade.exit_price,
+                'quantity': trade.quantity,
+                'pnl': trade.pnl,
+                'pnl_pct': trade.pnl_pct,
+                'fees': trade.fees,
+                'hold_bars': trade.hold_bars,
+                'exit_reason': trade.exit_reason,
+                'leverage': trade.leverage,
+            })
+
+        return pd.DataFrame(records)
+
     def _calculate_metrics(self) -> Dict[str, Any]:
-        """Calculate portfolio metrics"""
+        """Calculate portfolio metrics using MetricsCalculator"""
         if not self.all_trades:
             return {'total_trades': 0, 'total_pnl': 0, 'return_pct': 0}
 
-        trades_df = pd.DataFrame([
-            {'pnl': t.pnl, 'pnl_pct': t.pnl_pct, 'fees': t.fees, 'hold_bars': t.hold_bars}
-            for t in self.all_trades
-        ])
-
-        metrics = {}
-        metrics['total_trades'] = len(self.all_trades)
-        metrics['total_pnl'] = trades_df['pnl'].sum()
-        metrics['return_pct'] = (self.capital - self.config.initial_capital) / self.config.initial_capital * 100
-        metrics['final_capital'] = self.capital
-        metrics['total_fees'] = trades_df['fees'].sum()
-
-        winning = trades_df[trades_df['pnl'] > 0]
-        losing = trades_df[trades_df['pnl'] <= 0]
-        metrics['winning_trades'] = len(winning)
-        metrics['losing_trades'] = len(losing)
-        metrics['win_rate'] = len(winning) / len(trades_df) * 100 if len(trades_df) > 0 else 0
-
-        metrics['avg_win'] = winning['pnl'].mean() if len(winning) > 0 else 0
-        metrics['avg_loss'] = losing['pnl'].mean() if len(losing) > 0 else 0
-
-        gross_profit = winning['pnl'].sum() if len(winning) > 0 else 0
-        gross_loss = abs(losing['pnl'].sum()) if len(losing) > 0 else 0
-        metrics['profit_factor'] = gross_profit / gross_loss if gross_loss > 0 else float('inf') if gross_profit > 0 else 0
-
+        # Build equity curve DataFrame for MetricsCalculator
         equity_curve = [self.config.initial_capital]
-        for pnl in trades_df['pnl']:
-            equity_curve.append(equity_curve[-1] + pnl)
+        for trade in self.all_trades:
+            equity_curve.append(equity_curve[-1] + trade.pnl)
 
-        equity_curve = np.array(equity_curve)
-        running_max = np.maximum.accumulate(equity_curve)
-        drawdown = (running_max - equity_curve) / running_max * 100
-        metrics['max_drawdown'] = np.max(drawdown) if len(drawdown) > 0 else 0
+        # Create equity DataFrame with timestamps
+        timestamps = [0] + [t.exit_time for t in self.all_trades]
+        self.equity_df = pd.DataFrame({
+            'timestamp': timestamps,
+            'equity': equity_curve
+        })
 
-        metrics['avg_holding_bars'] = trades_df['hold_bars'].mean() if len(trades_df) > 0 else 0
+        # Use MetricsCalculator to calculate all metrics
+        metrics = self.metrics_calculator.calculate_all(
+            trades=self.all_trades,
+            equity_curve=self.equity_df,
+            initial_capital=self.config.initial_capital,
+        )
 
         return metrics
 
