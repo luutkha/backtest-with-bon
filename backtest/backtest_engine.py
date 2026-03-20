@@ -355,3 +355,59 @@ def create_rsi_backtest(
         return rsi_strategy(data, rp, os, ob)
 
     return BacktestEngine(config=config, strategy=strategy)
+
+
+def create_streak_breakout_backtest(
+    data_dir: str,
+    symbol: str,
+    atr_window_min: float = 1.0,
+    atr_window_max: float = 6.0,
+    consecutive_candles: int = 5,
+    risk_reward_ratio_sl: float = 0.5,
+    risk_reward_ratio_tp: float = 1.5,
+    **kwargs
+) -> BacktestEngine:
+    """
+    Factory function to create a Streak Breakout strategy backtest.
+
+    Enters on reversal signals after extended consecutive moves:
+    - LONG: After N consecutive green candles (bullish exhaustion)
+    - SHORT: After N consecutive red candles (bearish exhaustion)
+
+    Args:
+        data_dir: Data directory path
+        symbol: Trading symbol
+        atr_window_min: Minimum ATR % filter
+        atr_window_max: Maximum ATR % filter
+        consecutive_candles: Number of consecutive candles for entry
+        risk_reward_ratio_sl: Risk per trade % (e.g., 0.5 = 0.5%)
+        risk_reward_ratio_tp: Take profit relative to SL (e.g., 1.5 = 1.5x SL)
+        **kwargs: Additional BacktestConfig parameters
+
+    Returns:
+        Configured BacktestEngine
+    """
+    from backtest.signals.streak_breakout_strategy import streak_breakout_strategy
+
+    config = BacktestConfig(
+        data_dir=data_dir,
+        symbol=symbol,
+        **kwargs
+    )
+
+    def strategy(data,
+                 aw_min=atr_window_min,
+                 aw_max=atr_window_max,
+                 cc=consecutive_candles,
+                 rr_sl=risk_reward_ratio_sl,
+                 rr_tp=risk_reward_ratio_tp):
+        return streak_breakout_strategy(
+            data,
+            atr_window_min=aw_min,
+            atr_window_max=aw_max,
+            consecutive_candles=cc,
+            risk_reward_ratio_sl=rr_sl,
+            risk_reward_ratio_tp=rr_tp,
+        )
+
+    return BacktestEngine(config=config, strategy=strategy)

@@ -25,7 +25,12 @@ Usage:
     results = engine.run_backtest()
 """
 
-from .backtest_engine import BacktestEngine
+from .backtest_engine import (
+    BacktestEngine,
+    create_rsi_backtest,
+    create_ma_crossover_backtest,
+    create_streak_breakout_backtest,
+)
 from .config import BacktestConfig
 from .signals.signal_generator import Signal, SignalType, SignalData
 from .execution.execution_engine import Trade, PositionSide, ExitReason
@@ -44,4 +49,7 @@ __all__ = [
     'ExitReason',
     'UnifiedPortfolioBacktest',
     'UnifiedPortfolioConfig',
+    'create_rsi_backtest',
+    'create_ma_crossover_backtest',
+    'create_streak_breakout_backtest',
 ]
