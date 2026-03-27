@@ -24,7 +24,16 @@ backtest/
 │   └── metrics_calculator.py     # MetricsCalculator (vectorbt)
 ├── reporting/
 │   └── report_generator.py       # ReportGenerator
-└── unified_portfolio.py          # UnifiedPortfolioBacktest, UnifiedPortfolioConfig
+├── unified_portfolio.py          # UnifiedPortfolioBacktest, UnifiedPortfolioConfig
+├── optimization/
+│   ├── grid_search.py           # ParameterGridSearch
+│   ├── walk_forward.py           # WalkForwardAnalysis
+│   └── monte_carlo.py            # MonteCarloSimulator
+└── strategy_finder/
+    ├── strategies.py             # Strategy templates (RSI, MA_CROSSOVER, MACD, etc.)
+    ├── genetic_optimizer.py     # Genetic algorithm optimizer
+    ├── statistical_filter.py     # Statistical significance filters
+    └── strategy_ranker.py        # Strategy ranking and output formatting
 ```
 
 ## Quick Start
@@ -33,25 +42,41 @@ backtest/
 
 ```bash
 # Single symbol
-py unified_portfolio_runner.py --symbols BTCUSDT --strategy streak
+py batch_runner.py --symbols BTCUSDT --strategy streak
 
 # Multiple symbols
-py unified_portfolio_runner.py --symbols BTCUSDT ETHUSDT BNBUSDT SOLUSDT --strategy streak
+py batch_runner.py --symbols BTCUSDT ETHUSDT BNBUSDT SOLUSDT --strategy streak
 
 # All available symbols
-py unified_portfolio_runner.py --all --strategy streak
+py batch_runner.py --all --strategy streak
 
 # Custom TP/SL
-py unified_portfolio_runner.py --symbols BTCUSDT --strategy streak --tp 0.03 --sl 0.015
+py batch_runner.py --symbols BTCUSDT --strategy streak --tp 0.03 --sl 0.015
 
 # Custom capital and positions
-py unified_portfolio_runner.py --all --strategy streak --capital 100000 --max-positions 20 --position-size 0.05
+py batch_runner.py --all --strategy streak --capital 100000 --max-positions 20 --position-size 0.05
 
 # Save results
-py unified_portfolio_runner.py --symbols BTCUSDT --output results.csv
+py batch_runner.py --symbols BTCUSDT --output results.csv
 
 # Quiet mode (faster - skips validation, reduces logging)
-py unified_portfolio_runner.py --all --strategy streak --quiet
+py batch_runner.py --all --strategy streak --quiet
+```
+
+### Run Strategy Finder (Automated Discovery)
+
+```bash
+# Find best strategies across all symbols
+python strategy_finder_runner.py --all
+
+# Run on specific symbols
+python strategy_finder_runner.py --symbols BTCUSDT ETHUSDT
+
+# Custom filtering
+python strategy_finder_runner.py --all --min-sharpe 1.5 --min-trades 50
+
+# Output top 10 strategies
+python strategy_finder_runner.py --all --output results.csv --top-k 10
 ```
 
 ### Run Single Test
@@ -410,14 +435,13 @@ The framework uses vectorized numpy operations for intrabar simulation (~10x fas
 ## Requirements
 
 ```
-pandas
-numpy
-vectorbt
+pandas>=1.5.0
+numpy>=1.21.0
 ```
 
 Install:
 ```bash
-pip install vectorbt pandas numpy
+pip install pandas numpy
 ```
 
 ## Files
@@ -425,7 +449,8 @@ pip install vectorbt pandas numpy
 - `backtest/__init__.py` - Package exports
 - `backtest/backtest_engine.py` - Main backtest engine with factory functions
 - `backtest/unified_portfolio.py` - Unified portfolio backtest implementation
-- `unified_portfolio_runner.py` - CLI runner for unified portfolio mode
+- `batch_runner.py` - CLI runner for unified portfolio mode
+- `strategy_finder_runner.py` - Automated strategy discovery runner
 - `example.py` - Example usage
 - `sample_strategy.py` - Sample custom strategy (old architecture)
 - `backtest_engine.py` - Legacy single-file backtest engine (old architecture)
@@ -438,7 +463,7 @@ The framework runs in unified portfolio mode where all symbols share a single ca
 
 ```bash
 # Example: 20 max positions, 5% per position
-py unified_portfolio_runner.py --all --strategy streak \
+py batch_runner.py --all --strategy streak \
     --capital 100000 --max-positions 20 --position-size 0.05
 ```
 
