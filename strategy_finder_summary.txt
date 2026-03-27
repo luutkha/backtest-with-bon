@@ -1,0 +1,54 @@
+================================================================================
+STRATEGY FINDER RESULTS
+================================================================================
+Total strategies found: 13
+
+TOP 5 STRATEGIES (by composite score):
+--------------------------------------------------------------------------------
+
+1. BTCUSDT | CONSECUTIVE_CANDLE
+   Params: {"consecutive_candles": 6, "atr_ratio_min": 0.005, "atr_ratio_max": 0.08, "atr_offset": 1.5, "risk_multiplier": 0.5}
+   Trades: 10 | Win Rate: 70.00%
+   Sharpe: 64.631 | PF: 4.148
+   Return: 0.20% | Max DD: 0.02%
+   Consistency: 0.00 | WF Return: 0.00%
+   Rank Score: 26.7968
+
+2. BTCUSDT | CONSECUTIVE_CANDLE
+   Params: {"consecutive_candles": 6, "atr_ratio_min": 0.005, "atr_ratio_max": 0.04, "atr_offset": 1.5, "risk_multiplier": 0.5}
+   Trades: 10 | Win Rate: 70.00%
+   Sharpe: 64.631 | PF: 4.148
+   Return: 0.20% | Max DD: 0.02%
+   Consistency: 0.00 | WF Return: 0.00%
+   Rank Score: 26.7968
+
+3. BTCUSDT | CONSECUTIVE_CANDLE
+   Params: {"consecutive_candles": 4, "atr_ratio_min": 0.01, "atr_ratio_max": 0.04, "atr_offset": 1.5, "risk_multiplier": 2.0}
+   Trades: 11 | Win Rate: 54.55%
+   Sharpe: 33.193 | PF: 2.133
+   Return: 0.12% | Max DD: 0.04%
+   Consistency: 0.00 | WF Return: 0.00%
+   Rank Score: 13.6169
+
+4. BTCUSDT | CONSECUTIVE_CANDLE
+   Params: {"consecutive_candles": 4, "atr_ratio_min": 0.01, "atr_ratio_max": 0.08, "atr_offset": 1.0, "risk_multiplier": 1.0}
+   Trades: 11 | Win Rate: 54.55%
+   Sharpe: 33.193 | PF: 2.133
+   Return: 0.12% | Max DD: 0.04%
+   Consistency: 0.00 | WF Return: 0.00%
+   Rank Score: 13.6169
+
+5. BTCUSDT | CONSECUTIVE_CANDLE
+   Params: {"consecutive_candles": 4, "atr_ratio_min": 0.01, "atr_ratio_max": 0.06, "atr_offset": 0.5, "risk_multiplier": 2.0}
+   Trades: 11 | Win Rate: 54.55%
+   Sharpe: 33.193 | PF: 2.133
+   Return: 0.12% | Max DD: 0.04%
+   Consistency: 0.00 | WF Return: 0.00%
+   Rank Score: 13.6169
+
+================================================================================
+TOP STRATEGY PER SYMBOL:
+--------------------------------------------------------------------------------
+BTCUSDT: CONSECUTIVE_CANDLE (Sharpe: 64.631, PF: 4.148)
+
+================================================================================

@@ -1,0 +1,10 @@
+Backtest Summary - 2026-03-26 19:33:29
+Symbols: 583
+Runtime: 9.5 min
+Final Capital: $10,000.00
+Return: -0.00%
+Trades: 658
+Win Rate: 45.29%
+Sharpe: -0.845
+Max DD: 0.00%
+Trades CSV: C:\Personals\Code\backtest-with-bon\all_trades.csv

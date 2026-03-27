@@ -146,6 +146,12 @@ class Trade:
     hold_bars: int
     exit_reason: str
     leverage: float = 1.0
+    tp_price: float = 0.0
+    sl_price: float = 0.0
+    entry_fill_time: int = 0
+    entry_signal_time: int = 0
+    tp_hit_time: int = 0
+    sl_hit_time: int = 0
     entry_fill: Optional[FillInfo] = None
     exit_fill: Optional[FillInfo] = None
 
@@ -590,6 +596,10 @@ class IntradaySimulator:
         # Reset pending orders for each backtest run
         self.pending_orders = []
 
+        # Pending market order from previous 1h candle
+        # Key: 'long' or 'short', Value: entry price (h1_close of signal candle)
+        pending_market_order: Optional[Tuple[str, float]] = None
+
         # Pre-compute signal lookup dictionaries for O(1) access
         long_signal_dict = dict(zip(long_signals.index, long_signals.values))
         short_signal_dict = dict(zip(short_signals.index, short_signals.values))
@@ -621,6 +631,37 @@ class IntradaySimulator:
             start_idx = m1_h1_indices[h1_idx]
             end_idx = m1_h1_indices[h1_idx + 1] if h1_idx + 1 < h1_len else len(m1_timestamps)
 
+            # ============================================================
+            # STEP 1: Execute pending market order from previous 1h candle
+            # Entry at first 5m candle of THIS 1h period (after 1h signal delay)
+            # This simulates real trading: signal at 1h close, enter next hour
+            # ============================================================
+            if pending_market_order is not None and position is None and end_idx > start_idx:
+                side_str, signal_price = pending_market_order
+                side = PositionSide.LONG if side_str == 'long' else PositionSide.SHORT
+
+                # Execute at first 5m candle's open of this 1h period
+                first_5m_open = m1_opens[start_idx]
+                entry_price = self.execution.apply_slippage(first_5m_open, side)
+                quantity = self.execution.calculate_position_size(
+                    capital, position_size_pct, first_5m_open
+                )
+
+                position = self.execution.create_position(
+                    symbol=h1_data.get('symbol', 'UNKNOWN'),
+                    side=side,
+                    entry_time=int(m1_timestamps[start_idx]),
+                    entry_price=entry_price,
+                    quantity=quantity
+                )
+                entry_fee = self.execution.calculate_fee(entry_price, quantity)
+                capital -= entry_fee
+
+                pending_market_order = None
+
+            # ============================================================
+            # STEP 2: Check for pending limit order fills
+            # ============================================================
             # Check for pending limit order fills before checking exits
             if len(self.pending_orders) > 0 and end_idx > start_idx:
                 period_highs = m1_highs[start_idx:end_idx]
@@ -680,19 +721,23 @@ class IntradaySimulator:
                     capital += pnl - total_fees
                     position = None
 
-            # After processing intrabar candles, check for entry signals at close of this 1h candle
+            # ============================================================
+            # STEP 5: Check for NEW entry signals (set as pending for next iteration)
+            # Market orders are NOT executed immediately - they fire at the NEXT 1h candle
+            # This simulates the 1h delay in real trading (signal at close, enter next hour)
+            # ============================================================
             if position is None:
                 order_type = self.execution.config.order_type
 
                 # Check long entry
                 if long_signal_dict.get(h1_time, False):
                     side = PositionSide.LONG
-                    quantity = self.execution.calculate_position_size(
-                        capital, position_size_pct, h1_close
-                    )
 
                     if order_type == OrderType.LIMIT:
-                        # Create pending limit order
+                        # Limit order - create pending limit order
+                        quantity = self.execution.calculate_position_size(
+                            capital, position_size_pct, h1_close
+                        )
                         limit_price = self.execution.calculate_limit_price(h1_close, side)
                         tp_price, sl_price = self.execution.calculate_tp_sl(h1_close, side)
                         self.create_limit_order(
@@ -705,27 +750,19 @@ class IntradaySimulator:
                             sl_price=sl_price
                         )
                     else:
-                        # Market order - execute immediately
-                        entry_price = self.execution.apply_slippage(h1_close, side)
-                        position = self.execution.create_position(
-                            symbol=h1_data.get('symbol', 'UNKNOWN'),
-                            side=side,
-                            entry_time=h1_time,
-                            entry_price=entry_price,
-                            quantity=quantity
-                        )
-                        entry_fee = self.execution.calculate_fee(entry_price, quantity)
-                        capital -= entry_fee
+                        # Market order - set as pending for next 1h candle
+                        # Entry will execute at first 5m candle of next 1h period
+                        pending_market_order = ('long', h1_close)
 
                 # Check short entry
                 elif short_signal_dict.get(h1_time, False):
                     side = PositionSide.SHORT
-                    quantity = self.execution.calculate_position_size(
-                        capital, position_size_pct, h1_close
-                    )
 
                     if order_type == OrderType.LIMIT:
-                        # Create pending limit order
+                        # Limit order - create pending limit order
+                        quantity = self.execution.calculate_position_size(
+                            capital, position_size_pct, h1_close
+                        )
                         limit_price = self.execution.calculate_limit_price(h1_close, side)
                         tp_price, sl_price = self.execution.calculate_tp_sl(h1_close, side)
                         self.create_limit_order(
@@ -738,17 +775,9 @@ class IntradaySimulator:
                             sl_price=sl_price
                         )
                     else:
-                        # Market order - execute immediately
-                        entry_price = self.execution.apply_slippage(h1_close, side)
-                        position = self.execution.create_position(
-                            symbol=h1_data.get('symbol', 'UNKNOWN'),
-                            side=side,
-                            entry_time=h1_time,
-                            entry_price=entry_price,
-                            quantity=quantity
-                        )
-                        entry_fee = self.execution.calculate_fee(entry_price, quantity)
-                        capital -= entry_fee
+                        # Market order - set as pending for next 1h candle
+                        # Entry will execute at first 5m candle of next 1h period
+                        pending_market_order = ('short', h1_close)
 
             # Check exit signals (manual exit)
             if position is not None:

@@ -214,6 +214,12 @@ def streak_breakout_strategy(
 
     Returns:
         List of Signal objects
+
+    Note:
+        entry_price in Signal is informational only and NOT used in backtest execution.
+        The backtest uses actual 5m candle open price for market order entry.
+        This entry_price is calculated as (close - atr_multiplier * atr) for LONG
+        and (close + atr_multiplier * atr) for SHORT, which may differ from actual fill price.
     """
     # Parse config
     config = StreakConfig(
@@ -310,9 +316,9 @@ def create_streak_breakout_backtest(
     symbol: str,
     atr_window_min: float = 1.0,
     atr_window_max: float = 6.0,
-    consecutive_candles: int = 5,
-    risk_reward_ratio_sl: float = 0.5,
-    risk_reward_ratio_tp: float = 1.5,
+    consecutive_candles: int = 4,
+    risk_reward_ratio_sl: float = 1,
+    risk_reward_ratio_tp: float = 1,
     **kwargs
 ):
     """
